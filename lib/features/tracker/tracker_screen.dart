@@ -128,12 +128,34 @@ class _TrackerScreenState extends ConsumerState<TrackerScreen> {
     );
   }
 
+  String _habitSectionTitle(DateTime date) {
+    final today = DateTime.now();
+    if (_isSameDay(date, today)) return 'HOY';
+    final yesterday = today.subtract(const Duration(days: 1));
+    if (_isSameDay(date, yesterday)) return 'AYER';
+    if (!_localeReady) return '${date.day}/${date.month}/${date.year}';
+    return DateFormat("d 'DE' MMMM", 'es').format(date).toUpperCase();
+  }
+
   @override
   Widget build(BuildContext context) {
     final habitsAsync = ref.watch(habitsProvider);
     final remindersAsync = ref.watch(remindersProvider);
     final logsAsync = ref.watch(dailyLogsProvider);
     final score = ref.watch(dailyScoreProvider);
+    final selectedDate = ref.watch(selectedDateProvider);
+
+    final today = DateTime.now();
+    final String dateLabel;
+    if (_isSameDay(selectedDate, today)) {
+      dateLabel = 'Hoy';
+    } else if (_isSameDay(selectedDate, today.subtract(const Duration(days: 1)))) {
+      dateLabel = 'Ayer';
+    } else if (_localeReady) {
+      dateLabel = DateFormat("d MMM", 'es').format(selectedDate);
+    } else {
+      dateLabel = '${selectedDate.day}/${selectedDate.month}';
+    }
 
     return Scaffold(
       backgroundColor: AppColors.backgroundBase,
@@ -207,11 +229,16 @@ class _TrackerScreenState extends ConsumerState<TrackerScreen> {
 
             // ── SLIVER 2: Score card ──────────────────────────────────────
             SliverToBoxAdapter(
-              child: _ScoreCard(score: score),
+              child: _ScoreCard(score: score, dateLabel: dateLabel),
             ),
 
-            // ── SLIVER 3: Scored habits ───────────────────────────────────
-            SliverToBoxAdapter(child: _sectionTitle('HOY')),
+            // ── SLIVER 2.5: Date selector ─────────────────────────────────
+            const SliverToBoxAdapter(child: _DateSelector()),
+
+            // ── SLIVER 3: Habits ──────────────────────────────────────────
+            SliverToBoxAdapter(
+              child: _sectionTitle(_habitSectionTitle(selectedDate)),
+            ),
             habitsAsync.when(
               data: (habits) {
                 if (habits.isEmpty) {
@@ -219,7 +246,7 @@ class _TrackerScreenState extends ConsumerState<TrackerScreen> {
                     child: _emptyHint('Sin hábitos activos todavía'),
                   );
                 }
-                final weekday = DateTime.now().weekday;
+                final weekday = selectedDate.weekday;
                 return logsAsync.when(
                   data: (logs) => SliverList(
                     delegate: SliverChildBuilderDelegate(
@@ -324,12 +351,130 @@ class _TrackerScreenState extends ConsumerState<TrackerScreen> {
       );
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+bool _isSameDay(DateTime a, DateTime b) =>
+    a.year == b.year && a.month == b.month && a.day == b.day;
+
+// ─── Date Selector ───────────────────────────────────────────────────────────
+
+class _DateSelector extends ConsumerWidget {
+  const _DateSelector();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final selected = ref.watch(selectedDateProvider);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final isToday = _isSameDay(selected, today);
+
+    late String label;
+    if (isToday) {
+      label = 'Hoy';
+    } else if (_isSameDay(selected, today.subtract(const Duration(days: 1)))) {
+      label = 'Ayer';
+    } else {
+      try {
+        final raw = DateFormat("EEEE d 'de' MMMM", 'es').format(selected);
+        label = '${raw[0].toUpperCase()}${raw.substring(1)}';
+      } catch (_) {
+        label = '${selected.day}/${selected.month}/${selected.year}';
+      }
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surfaceCard,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.chevron_left_rounded, size: 22),
+              color: AppColors.textSecondary,
+              onPressed: () => ref.read(selectedDateProvider.notifier).state =
+                  selected.subtract(const Duration(days: 1)),
+            ),
+            Expanded(
+              child: GestureDetector(
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: selected,
+                    firstDate: DateTime(today.year - 1, today.month, today.day),
+                    lastDate: today,
+                    builder: (ctx, child) => Theme(
+                      data: Theme.of(ctx).copyWith(
+                        colorScheme: Theme.of(ctx).colorScheme.copyWith(
+                          primary: AppColors.primaryAccent,
+                        ),
+                      ),
+                      child: child!,
+                    ),
+                  );
+                  if (picked != null && context.mounted) {
+                    ref.read(selectedDateProvider.notifier).state =
+                        DateTime(picked.year, picked.month, picked.day);
+                  }
+                },
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      label,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: isToday
+                            ? AppColors.primaryAccent
+                            : AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Icon(
+                      Icons.calendar_month_rounded,
+                      size: 14,
+                      color: isToday
+                          ? AppColors.primaryAccent.withValues(alpha: 0.7)
+                          : AppColors.textSecondary,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            IconButton(
+              icon: Icon(
+                Icons.chevron_right_rounded,
+                size: 22,
+                color: isToday
+                    ? AppColors.surfaceElevated
+                    : AppColors.textSecondary,
+              ),
+              onPressed: isToday
+                  ? null
+                  : () {
+                      final next = selected.add(const Duration(days: 1));
+                      if (!next.isAfter(today)) {
+                        ref.read(selectedDateProvider.notifier).state = next;
+                      }
+                    },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ─── Score Card ──────────────────────────────────────────────────────────────
 
 class _ScoreCard extends StatelessWidget {
   final (int, int) score;
+  final String dateLabel;
 
-  const _ScoreCard({required this.score});
+  const _ScoreCard({required this.score, required this.dateLabel});
 
   @override
   Widget build(BuildContext context) {
@@ -364,7 +509,7 @@ class _ScoreCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Hoy',
+                      dateLabel,
                       style: GoogleFonts.inter(
                         fontSize: 12,
                         fontWeight: FontWeight.w500,

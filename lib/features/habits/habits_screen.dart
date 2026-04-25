@@ -675,28 +675,31 @@ class _EditHabitSheetState extends ConsumerState<_EditHabitSheet> {
 
     setState(() => _saving = true);
 
-    final notifier = ref.read(habitsNotifierProvider.notifier);
+    try {
+      final notifier = ref.read(habitsNotifierProvider.notifier);
 
-    // 1. Update all fields (name, category, days, notifications)
-    await notifier.updateHabitFields(
-      id:            widget.habit.id,
-      name:          name,
-      category:      _category,
-      daysOfWeek:    _daysOfWeek,
-      notifyEnabled: _notifyEnabled,
-      notifyStartHr: _kBlocks[_notifyBlock].startHr,
-      notifyEndHr:   _kBlocks[_notifyBlock].endHr,
-    );
+      await notifier.updateHabitFields(
+        id:            widget.habit.id,
+        name:          name,
+        category:      _category,
+        daysOfWeek:    _daysOfWeek,
+        notifyEnabled: _notifyEnabled,
+        notifyStartHr: _kBlocks[_notifyBlock].startHr,
+        notifyEndHr:   _kBlocks[_notifyBlock].endHr,
+      );
 
-    // 2. Reorder if position changed
-    final currentHabits = ref.read(habitsNotifierProvider).value ?? [];
-    final currentIndex  = currentHabits.indexWhere((h) => h.id == widget.habit.id);
-    final newIndex = newPos - 1;
-    if (currentIndex != -1 && newIndex != currentIndex) {
-      await notifier.reorderHabits(currentIndex, newIndex);
+      final currentHabits = ref.read(habitsNotifierProvider).value ?? [];
+      final currentIndex  = currentHabits.indexWhere((h) => h.id == widget.habit.id);
+      final newIndex = newPos - 1;
+      if (currentIndex != -1 && newIndex != currentIndex) {
+        await notifier.reorderHabits(currentIndex, newIndex);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _saving = false);
+        Navigator.pop(context);
+      }
     }
-
-    if (mounted) Navigator.pop(context);
   }
 
   @override
@@ -935,26 +938,33 @@ class _CreateHabitSheetState extends ConsumerState<_CreateHabitSheet> {
     if (name.isEmpty) return;
 
     setState(() => _saving = true);
-    final currentHabits = ref.read(habitsNotifierProvider).value ?? [];
-    final userId = Supabase.instance.client.auth.currentUser!.id;
 
-    final habit = Habit(
-      id: '',
-      userId: userId,
-      name: name,
-      category: _category,
-      hasScore: _hasScore,
-      isActive: true,
-      sortOrder: currentHabits.length,
-      createdAt: DateTime.now().toUtc(),
-      daysOfWeek:    _daysOfWeek,
-      notifyEnabled: _notifyEnabled,
-      notifyStartHr: _kBlocks[_notifyBlock].startHr,
-      notifyEndHr:   _kBlocks[_notifyBlock].endHr,
-    );
+    try {
+      final currentHabits = ref.read(habitsNotifierProvider).value ?? [];
+      final userId = Supabase.instance.client.auth.currentUser!.id;
 
-    await ref.read(habitsNotifierProvider.notifier).createHabit(habit);
-    if (mounted) Navigator.pop(context);
+      final habit = Habit(
+        id: '',
+        userId: userId,
+        name: name,
+        category: _category,
+        hasScore: _hasScore,
+        isActive: true,
+        sortOrder: currentHabits.length,
+        createdAt: DateTime.now().toUtc(),
+        daysOfWeek:    _daysOfWeek,
+        notifyEnabled: _notifyEnabled,
+        notifyStartHr: _kBlocks[_notifyBlock].startHr,
+        notifyEndHr:   _kBlocks[_notifyBlock].endHr,
+      );
+
+      await ref.read(habitsNotifierProvider.notifier).createHabit(habit);
+    } finally {
+      if (mounted) {
+        setState(() => _saving = false);
+        Navigator.pop(context);
+      }
+    }
   }
 
   @override

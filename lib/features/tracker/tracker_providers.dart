@@ -22,6 +22,13 @@ final reminderRepositoryProvider = Provider<ReminderRepository>(
   (ref) => ReminderRepository(Supabase.instance.client),
 );
 
+// ─── Selected Date ────────────────────────────────────────────────────────────
+
+final selectedDateProvider = StateProvider<DateTime>((ref) {
+  final now = DateTime.now();
+  return DateTime(now.year, now.month, now.day);
+});
+
 // ─── Data Providers ──────────────────────────────────────────────────────────
 
 final habitsProvider = FutureProvider<List<Habit>>(
@@ -78,15 +85,21 @@ class DailyLogsNotifier
       state = AsyncData(current.where((l) => l.habitId != habitId).toList());
     }
 
-    // Cancel notification when done; reschedule when un-done.
-    final habits = _ref.read(habitsProvider).value ?? [];
-    final habit = habits.cast<Habit?>()
-        .firstWhere((h) => h?.id == habitId, orElse: () => null);
-    if (habit != null && habit.notifyEnabled) {
-      if (completed) {
-        await NotificationService.cancel(NotificationService.habitId(habitId));
-      } else {
-        await NotificationService.scheduleHabit(habit);
+    // Only manage notifications when toggling today's habits.
+    final now = DateTime.now();
+    final isToday = date.year == now.year &&
+        date.month == now.month &&
+        date.day == now.day;
+    if (isToday) {
+      final habits = _ref.read(habitsProvider).value ?? [];
+      final habit = habits.cast<Habit?>()
+          .firstWhere((h) => h?.id == habitId, orElse: () => null);
+      if (habit != null && habit.notifyEnabled) {
+        if (completed) {
+          await NotificationService.cancel(NotificationService.habitId(habitId));
+        } else {
+          await NotificationService.scheduleHabit(habit);
+        }
       }
     }
 
@@ -103,11 +116,14 @@ class DailyLogsNotifier
 
 final dailyLogsProvider = StateNotifierProvider<
     DailyLogsNotifier, AsyncValue<List<DailyLog>>>(
-  (ref) => DailyLogsNotifier(
-    ref.read(logRepositoryProvider),
-    ref,
-    date: DateTime.now(),
-  ),
+  (ref) {
+    final date = ref.watch(selectedDateProvider);
+    return DailyLogsNotifier(
+      ref.read(logRepositoryProvider),
+      ref,
+      date: date,
+    );
+  },
 );
 
 // ─── Reminder done state (in-memory, resets each session) ────────────────────
@@ -149,18 +165,19 @@ final reminderDoneProvider =
 final dailyScoreProvider = Provider<(int, int)>((ref) {
   final logsAsync = ref.watch(dailyLogsProvider);
   final habitsAsync = ref.watch(habitsProvider);
+  final selectedDate = ref.watch(selectedDateProvider);
 
   return logsAsync.when(
     data: (logs) => habitsAsync.when(
       data: (habits) {
-        final weekday = DateTime.now().weekday;
+        final weekday = selectedDate.weekday;
         final total = habits.length;
         int completed = 0;
         for (final h in habits) {
           if (!h.daysOfWeek.contains(weekday)) {
-            completed++; // not scheduled today → auto-completed
+            completed++; // not scheduled that day → auto-completed
           } else if (logs.any((l) => l.habitId == h.id && l.completed)) {
-            completed++; // scheduled and manually completed
+            completed++;
           }
         }
         return (completed, total);
