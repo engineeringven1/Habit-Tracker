@@ -85,31 +85,38 @@ class DailyLogsNotifier
       state = AsyncData(current.where((l) => l.habitId != habitId).toList());
     }
 
-    // Only manage notifications when toggling today's habits.
+    // Persist to database — must happen before notification logic.
+    try {
+      await _repo.upsertLog(habitId, date, completed);
+      final fresh = await _repo.getLogsForDate(date);
+      state = AsyncData(fresh);
+    } catch (_) {
+      await loadLogs();
+      return;
+    }
+
+    // Notifications are secondary — errors here must not undo the saved log.
     final now = DateTime.now();
     final isToday = date.year == now.year &&
         date.month == now.month &&
         date.day == now.day;
     if (isToday) {
-      final habits = _ref.read(habitsProvider).value ?? [];
-      final habit = habits.cast<Habit?>()
-          .firstWhere((h) => h?.id == habitId, orElse: () => null);
-      if (habit != null && habit.notifyEnabled) {
-        if (completed) {
-          await NotificationService.cancel(NotificationService.habitId(habitId));
-        } else {
-          await NotificationService.scheduleHabit(habit);
+      try {
+        final habits = _ref.read(habitsProvider).value ?? [];
+        final habit = habits
+            .cast<Habit?>()
+            .firstWhere((h) => h?.id == habitId, orElse: () => null);
+        if (habit != null && habit.notifyEnabled) {
+          if (completed) {
+            await NotificationService.cancel(
+                NotificationService.habitId(habitId));
+          } else {
+            await NotificationService.scheduleHabit(habit);
+          }
         }
+      } catch (_) {
+        // Notification errors are non-critical.
       }
-    }
-
-    try {
-      await _repo.upsertLog(habitId, date, completed);
-      // Silent refresh: set AsyncData directly to avoid AsyncLoading flash.
-      final fresh = await _repo.getLogsForDate(date);
-      state = AsyncData(fresh);
-    } catch (_) {
-      await loadLogs();
     }
   }
 }
