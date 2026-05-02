@@ -32,6 +32,47 @@ class PaletteData {
 // Shared flag read by PaletteNotifier._apply() and written by DarkModeNotifier.
 bool currentIsDark = true;
 
+// Loaded once in main() before runApp() — eliminates async race on startup.
+PaletteData _loadedPalette = appPalettes[0];
+
+/// Call this in main() before runApp(). Reads saved preferences and applies
+/// the correct AppColors so providers can initialize synchronously.
+Future<void> preloadTheme() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final isDark     = prefs.getBool('is_dark_mode') ?? true;
+    final paletteId  = prefs.getString('palette_id') ?? 'cosmos';
+    final palette    = appPalettes.firstWhere(
+      (p) => p.id == paletteId,
+      orElse: () => appPalettes[0],
+    );
+
+    currentIsDark  = isDark;
+    _loadedPalette = palette;
+
+    AppColors.primaryAccent   = palette.primary;
+    AppColors.secondaryAccent = palette.secondary;
+    AppColors.gradientPrimary = List.unmodifiable(palette.gradientPrimary);
+    AppColors.gradientAccent  = List.unmodifiable(palette.gradientAccent);
+
+    if (isDark) {
+      AppColors.backgroundBase  = palette.backgroundBase;
+      AppColors.surfaceCard     = palette.surfaceCard;
+      AppColors.surfaceElevated = palette.surfaceElevated;
+      AppColors.textPrimary     = const Color(0xFFF8F8FF);
+      AppColors.textSecondary   = const Color(0xFF94A3B8);
+    } else {
+      AppColors.backgroundBase  = const Color(0xFFF0F2F5);
+      AppColors.surfaceCard     = const Color(0xFFFFFFFF);
+      AppColors.surfaceElevated = const Color(0xFFE2E8F0);
+      AppColors.textPrimary     = const Color(0xFF1E293B);
+      AppColors.textSecondary   = const Color(0xFF64748B);
+    }
+  } catch (_) {
+    // Keep defaults on failure.
+  }
+}
+
 const List<PaletteData> appPalettes = [
   // 1 ── Cosmos – fondo negro azulado oscuro, violeta/índigo ───────────────────
   PaletteData(
@@ -100,18 +141,7 @@ class PaletteNotifier extends Notifier<PaletteData> {
 
   @override
   PaletteData build() {
-    _loadSaved();
-    return appPalettes[0];
-  }
-
-  void _loadSaved() async {
-    final prefs = await SharedPreferences.getInstance();
-    final id = prefs.getString(_prefKey) ?? 'cosmos';
-    final found = appPalettes.where((p) => p.id == id).firstOrNull;
-    if (found != null) {
-      _apply(found);
-      state = found;
-    }
+    return _loadedPalette;
   }
 
   void select(PaletteData palette) async {

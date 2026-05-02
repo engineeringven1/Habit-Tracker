@@ -11,6 +11,7 @@ class Habit {
   final bool notifyEnabled;
   final int  notifyStartHr; // informational start of active window (0-23)
   final int  notifyEndHr;   // hour to fire daily reminder (0-23)
+  final List<int> celebratedMilestones;
 
   const Habit({
     required this.id,
@@ -21,11 +22,18 @@ class Habit {
     required this.isActive,
     required this.sortOrder,
     required this.createdAt,
-    this.daysOfWeek    = const [1, 2, 3, 4, 5, 6, 7],
-    this.notifyEnabled = false,
-    this.notifyStartHr = 8,
-    this.notifyEndHr   = 22,
+    this.daysOfWeek           = const [1, 2, 3, 4, 5, 6, 7],
+    this.notifyEnabled        = false,
+    this.notifyStartHr        = 8,
+    this.notifyEndHr          = 22,
+    this.celebratedMilestones = const [],
   });
+
+  static List<int> _parseMilestones(dynamic value) {
+    if (value == null) return [];
+    if (value is List) return value.map((d) => (d as num).toInt()).toList();
+    return [];
+  }
 
   static List<int> _parseDays(dynamic value) {
     if (value == null) return [1, 2, 3, 4, 5, 6, 7];
@@ -47,9 +55,10 @@ class Habit {
             ? DateTime.parse(json['created_at'] as String)
             : DateTime.now(),
         daysOfWeek:    _parseDays(json['days_of_week']),
-        notifyEnabled: (json['notify_enabled'] as bool?) ?? false,
-        notifyStartHr: (json['notify_start_hr'] as int?)  ?? 8,
-        notifyEndHr:   (json['notify_end_hr']   as int?)  ?? 22,
+        notifyEnabled:        (json['notify_enabled'] as bool?) ?? false,
+        notifyStartHr:        (json['notify_start_hr'] as int?)  ?? 8,
+        notifyEndHr:          (json['notify_end_hr']   as int?)  ?? 22,
+        celebratedMilestones: _parseMilestones(json['celebrated_milestones']),
       );
 
   Map<String, dynamic> toJson() => {
@@ -80,6 +89,7 @@ class Habit {
     bool?      notifyEnabled,
     int?       notifyStartHr,
     int?       notifyEndHr,
+    List<int>? celebratedMilestones,
   }) =>
       Habit(
         id: id ?? this.id,
@@ -90,10 +100,11 @@ class Habit {
         isActive: isActive ?? this.isActive,
         sortOrder: sortOrder ?? this.sortOrder,
         createdAt: createdAt ?? this.createdAt,
-        daysOfWeek:    daysOfWeek    ?? this.daysOfWeek,
-        notifyEnabled: notifyEnabled ?? this.notifyEnabled,
-        notifyStartHr: notifyStartHr ?? this.notifyStartHr,
-        notifyEndHr:   notifyEndHr   ?? this.notifyEndHr,
+        daysOfWeek:           daysOfWeek           ?? this.daysOfWeek,
+        notifyEnabled:        notifyEnabled        ?? this.notifyEnabled,
+        notifyStartHr:        notifyStartHr        ?? this.notifyStartHr,
+        notifyEndHr:          notifyEndHr          ?? this.notifyEndHr,
+        celebratedMilestones: celebratedMilestones ?? this.celebratedMilestones,
       );
 
   @override

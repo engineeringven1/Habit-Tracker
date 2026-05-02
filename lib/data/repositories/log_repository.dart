@@ -23,11 +23,12 @@ class LogRepository {
   Future<void> upsertLog(
     String habitId,
     DateTime date,
-    bool completed,
-  ) async {
+    bool completed, {
+    bool manuallyFailed = false,
+    DateTime? completedAt, // null → uses DateTime.now() for completed
+  }) async {
     final dateStr = _dateStr(date);
 
-    // Check-then-insert/update avoids relying on a UNIQUE constraint for upsert.
     final existing = await _client
         .from('daily_logs')
         .select('id')
@@ -36,18 +37,28 @@ class LogRepository {
         .eq('log_date', dateStr)
         .maybeSingle();
 
+    final completedAtStr = completed
+        ? (completedAt ?? DateTime.now()).toUtc().toIso8601String()
+        : null;
+
     if (existing != null) {
       await _client
           .from('daily_logs')
-          .update({'completed': completed})
+          .update({
+            'completed':       completed,
+            'manually_failed': manuallyFailed,
+            'completed_at':    completedAtStr,
+          })
           .eq('id', existing['id'] as String)
           .eq('user_id', _userId);
     } else {
       await _client.from('daily_logs').insert({
-        'user_id':    _userId,
-        'habit_id':   habitId,
-        'log_date':   dateStr,
-        'completed':  completed,
+        'user_id':         _userId,
+        'habit_id':        habitId,
+        'log_date':        dateStr,
+        'completed':       completed,
+        'manually_failed': manuallyFailed,
+        'completed_at':    completedAtStr,
       });
     }
   }

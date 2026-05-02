@@ -10,6 +10,7 @@ import 'core/theme/dark_mode_provider.dart';
 import 'core/theme/palette_provider.dart';
 import 'data/supabase/supabase_config.dart';
 import 'features/auth/login_screen.dart';
+import 'features/arena/arena_screen.dart';
 import 'features/habits/habits_screen.dart';
 import 'features/mentor/mentor_screen.dart';
 import 'features/stats/stats_screen.dart';
@@ -23,6 +24,7 @@ Future<void> main() async {
     anonKey: SupabaseConfig.anonKey,
   );
   await NotificationService.init();
+  await preloadTheme();
   runApp(const ProviderScope(child: HabitTrackerApp()));
 }
 
@@ -60,6 +62,10 @@ final _router = GoRouter(
         GoRoute(
           path: '/mentor',
           builder: (_, _) => const MentorScreen(),
+        ),
+        GoRoute(
+          path: '/arena',
+          builder: (_, _) => const ArenaScreen(),
         ),
         GoRoute(
           path: '/habits',
@@ -102,7 +108,8 @@ class _MainShell extends StatelessWidget {
   int get _selectedIndex {
     if (location.startsWith('/stats')) return 1;
     if (location.startsWith('/mentor')) return 2;
-    if (location.startsWith('/habits')) return 3;
+    if (location.startsWith('/arena')) return 3;
+    if (location.startsWith('/habits')) return 4;
     return 0;
   }
 
@@ -122,6 +129,8 @@ class _MainShell extends StatelessWidget {
             case 2:
               context.go('/mentor');
             case 3:
+              context.go('/arena');
+            case 4:
               context.go('/habits');
           }
         },
@@ -140,6 +149,11 @@ class _MainShell extends StatelessWidget {
             icon: Icon(Icons.psychology_outlined),
             selectedIcon: Icon(Icons.psychology_rounded),
             label: 'Mentor',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.shield_outlined),
+            selectedIcon: Icon(Icons.shield_rounded),
+            label: 'Arena',
           ),
           NavigationDestination(
             icon: Icon(Icons.settings_outlined),

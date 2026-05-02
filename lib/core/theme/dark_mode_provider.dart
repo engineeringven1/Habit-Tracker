@@ -16,18 +16,7 @@ class DarkModeNotifier extends Notifier<bool> {
 
   @override
   bool build() {
-    _load();
-    return true; // default: dark
-  }
-
-  void _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final isDark = prefs.getBool(_key) ?? true;
-    currentIsDark = isDark;
-    if (!isDark) {
-      _applyLight();
-      state = false;
-    }
+    return currentIsDark;
   }
 
   void toggle() async {

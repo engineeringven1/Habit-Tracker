@@ -50,6 +50,14 @@ class HabitRepository {
         .eq('user_id', _userId);
   }
 
+  Future<void> updateCelebratedMilestones(String id, List<int> milestones) async {
+    await _client
+        .from('habits')
+        .update({'celebrated_milestones': milestones})
+        .eq('id', id)
+        .eq('user_id', _userId);
+  }
+
   Future<bool> hasHabits() async {
     final data = await _client
         .from('habits')

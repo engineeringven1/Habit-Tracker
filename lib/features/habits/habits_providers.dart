@@ -75,6 +75,18 @@ class HabitsNotifier extends StateNotifier<AsyncValue<List<Habit>>> {
     await NotificationService.scheduleHabit(updated);
   }
 
+  Future<void> addCelebratedMilestone(String id, int milestone) async {
+    final habits = state.value;
+    if (habits == null) return;
+    final habit = habits.cast<Habit?>().firstWhere((h) => h?.id == id, orElse: () => null);
+    if (habit == null) return;
+    final updated = [...habit.celebratedMilestones, milestone];
+    state = AsyncData(
+      habits.map((h) => h.id == id ? h.copyWith(celebratedMilestones: updated) : h).toList(),
+    );
+    await _repo.updateCelebratedMilestones(id, updated);
+  }
+
   Future<void> reorderHabits(int oldIndex, int newIndex) async {
     final habits = state.value;
     if (habits == null) return;

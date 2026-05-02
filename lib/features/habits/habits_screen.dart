@@ -1,12 +1,18 @@
+﻿import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/constants/app_colors.dart';
 import '../../data/models/habit.dart';
 import '../../data/models/reminder.dart';
 import '../../shared/widgets/gradient_button.dart';
 import 'habits_providers.dart';
+import '../mentor/mentor_providers.dart' show habitNamePrefillProvider;
+import '../stats/stats_providers.dart';
 
 // ─── 3-hour time blocks ───────────────────────────────────────────────────────
 
@@ -36,7 +42,7 @@ int _blockFromEndHr(int endHr) {
 class HabitsScreen extends ConsumerWidget {
   const HabitsScreen({super.key});
 
-  void _openCreateSheet(BuildContext context) {
+  void _openCreateSheet(BuildContext context, {String? prefillName}) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -44,7 +50,7 @@ class HabitsScreen extends ConsumerWidget {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (_) => const _CreateHabitSheet(),
+      builder: (_) => _CreateHabitSheet(prefillName: prefillName),
     );
   }
 
@@ -122,6 +128,15 @@ class HabitsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // 1C: open create sheet with pre-filled name when navigated from Mentor
+    ref.listen<String?>(habitNamePrefillProvider, (_, prefill) {
+      if (prefill == null) return;
+      ref.read(habitNamePrefillProvider.notifier).state = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (context.mounted) _openCreateSheet(context, prefillName: prefill);
+      });
+    });
+
     final habitsAsync = ref.watch(habitsNotifierProvider);
     final remindersAsync = ref.watch(remindersNotifierProvider);
 
@@ -346,6 +361,70 @@ class HabitsScreen extends ConsumerWidget {
             },
           ),
 
+          // ── Herramientas section ──────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
+            child: Text(
+              'HERRAMIENTAS',
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 2,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ),
+
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Material(
+              color: AppColors.surfaceCard,
+              borderRadius: BorderRadius.circular(14),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: () => showModalBottomSheet(
+                  context: context,
+                  isScrollControlled: true,
+                  backgroundColor: AppColors.surfaceCard,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                  ),
+                  builder: (_) => const _ExportSheet(),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: AppColors.primaryAccent.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(Icons.download_rounded,
+                            color: AppColors.primaryAccent, size: 20),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Text(
+                          'Exportar mis datos',
+                          style: GoogleFonts.inter(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
+                      Icon(Icons.chevron_right_rounded,
+                          color: AppColors.textSecondary, size: 20),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+
           const SizedBox(height: 100),
         ],
       ),
@@ -437,6 +516,33 @@ class _HabitManageCard extends StatelessWidget {
                 ],
               ),
             ),
+          ),
+
+          // Streak badge
+          Consumer(
+            builder: (_, ref, _) {
+              final streak = ref
+                  .watch(habitStreakProvider(habit.id))
+                  .value
+                  ?.current ?? 0;
+              if (streak == 0) return const SizedBox.shrink();
+              return Container(
+                margin: const EdgeInsets.only(right: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.primaryAccent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '🔥 ${streak}d',
+                  style: GoogleFonts.inter(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.primaryAccent,
+                  ),
+                ),
+              );
+            },
           ),
 
           // Edit button
@@ -733,7 +839,17 @@ class _EditHabitSheetState extends ConsumerState<_EditHabitSheet> {
                 color: AppColors.textPrimary,
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
+
+            // Streak card
+            ref.watch(habitStreakProvider(widget.habit.id)).when(
+              data: (data) => data.current == 0 && data.record == 0
+                  ? const SizedBox.shrink()
+                  : _StreakCard(current: data.current, record: data.record),
+              loading: () => const SizedBox.shrink(),
+              error: (_, _) => const SizedBox.shrink(),
+            ),
+            const SizedBox(height: 16),
 
             // Name
             TextField(
@@ -909,17 +1025,144 @@ class _EditHabitSheetState extends ConsumerState<_EditHabitSheet> {
   }
 }
 
+// ─── Streak Card ─────────────────────────────────────────────────────────────
+
+class _StreakCard extends StatelessWidget {
+  final int current;
+  final int record;
+
+  const _StreakCard({required this.current, required this.record});
+
+  @override
+  Widget build(BuildContext context) {
+    final isRecord = current > 0 && current >= record;
+    final badge = isRecord && record > 1
+        ? (current > record ? 'Nuevo récord 🏆' : 'Igualando récord 🏆')
+        : null;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: isRecord
+            ? AppColors.primaryAccent.withValues(alpha: 0.08)
+            : AppColors.surfaceElevated,
+        borderRadius: BorderRadius.circular(14),
+        border: isRecord
+            ? Border.all(
+                color: AppColors.primaryAccent.withValues(alpha: 0.3),
+                width: 1.5,
+              )
+            : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (badge != null) ...[
+            Text(
+              badge,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.primaryAccent,
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          Row(
+            children: [
+              _StatCol(
+                label: 'Racha actual',
+                value: current,
+                highlight: isRecord,
+              ),
+              Container(
+                width: 1,
+                height: 38,
+                margin: const EdgeInsets.symmetric(horizontal: 24),
+                color: AppColors.surfaceCard,
+              ),
+              _StatCol(
+                label: 'Récord',
+                value: record,
+                highlight: false,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatCol extends StatelessWidget {
+  final String label;
+  final int value;
+  final bool highlight;
+
+  const _StatCol({
+    required this.label,
+    required this.value,
+    required this.highlight,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: GoogleFonts.inter(
+            fontSize: 11,
+            color: AppColors.textSecondary,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              '$value',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 30,
+                fontWeight: FontWeight.w700,
+                height: 1,
+                color: highlight
+                    ? AppColors.primaryAccent
+                    : AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 3),
+              child: Text(
+                'días',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 // ─── Create Habit Sheet ───────────────────────────────────────────────────────
 
 class _CreateHabitSheet extends ConsumerStatefulWidget {
-  const _CreateHabitSheet();
+  final String? prefillName;
+  const _CreateHabitSheet({this.prefillName});
 
   @override
   ConsumerState<_CreateHabitSheet> createState() => _CreateHabitSheetState();
 }
 
 class _CreateHabitSheetState extends ConsumerState<_CreateHabitSheet> {
-  final _nameController = TextEditingController();
+  late final _nameController =
+      TextEditingController(text: widget.prefillName ?? '');
   String _category = 'disciplina';
   bool _hasScore = true;
   bool   _saving       = false;
@@ -1557,6 +1800,341 @@ class _AddReminderSheetState extends ConsumerState<_AddReminderSheet> {
             isLoading: _saving,
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Export Sheet ─────────────────────────────────────────────────────────────
+
+enum _ExportRange { week, month, all }
+enum _ExportFormat { csv, json }
+
+class _ExportSheet extends ConsumerStatefulWidget {
+  const _ExportSheet();
+
+  @override
+  ConsumerState<_ExportSheet> createState() => _ExportSheetState();
+}
+
+class _ExportSheetState extends ConsumerState<_ExportSheet> {
+  _ExportRange _range = _ExportRange.month;
+  _ExportFormat _format = _ExportFormat.csv;
+  bool _exporting = false;
+
+  String get _rangeLabel => switch (_range) {
+        _ExportRange.week  => 'Última semana',
+        _ExportRange.month => 'Último mes',
+        _ExportRange.all   => 'Todo',
+      };
+
+  Future<void> _export() async {
+    setState(() => _exporting = true);
+    try {
+      final client = Supabase.instance.client;
+      final userId = client.auth.currentUser!.id;
+
+      final today = DateTime.now();
+      final startDate = switch (_range) {
+        _ExportRange.week  => today.subtract(const Duration(days: 6)),
+        _ExportRange.month => today.subtract(const Duration(days: 29)),
+        _ExportRange.all   => DateTime(2020),
+      };
+      final startStr = _fmt(startDate);
+      final todayStr = _fmt(today);
+
+      final habitsRaw = await client
+          .from('habits')
+          .select('id, name, category')
+          .eq('user_id', userId);
+      final habitMap = <String, Map<String, String>>{};
+      for (final h in (habitsRaw as List)) {
+        habitMap[h['id'] as String] = {
+          'name':     h['name']     as String? ?? '',
+          'category': h['category'] as String? ?? '',
+        };
+      }
+
+      final logsRaw = await client
+          .from('daily_logs')
+          .select('habit_id, log_date, completed, manually_failed, completed_at')
+          .eq('user_id', userId)
+          .gte('log_date', startStr)
+          .lte('log_date', todayStr)
+          .order('log_date', ascending: true);
+      final logs = List<Map<String, dynamic>>.from(logsRaw as List);
+
+      final notesRaw = await client
+          .from('daily_notes')
+          .select('note_date, note_text')
+          .eq('user_id', userId)
+          .gte('note_date', startStr)
+          .lte('note_date', todayStr);
+      final noteMap = <String, String>{};
+      for (final n in (notesRaw as List)) {
+        noteMap[n['note_date'] as String] = n['note_text'] as String? ?? '';
+      }
+
+      late String content;
+      late String fileName;
+      late String mimeType;
+
+      if (_format == _ExportFormat.csv) {
+        content  = _buildCsv(logs, habitMap, noteMap);
+        fileName = 'habitos_$todayStr.csv';
+        mimeType = 'text/csv';
+      } else {
+        content  = _buildJson(logs, habitMap, noteMap, startDate, today);
+        fileName = 'habitos_$todayStr.json';
+        mimeType = 'application/json';
+      }
+
+      final dir  = await getTemporaryDirectory();
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsString(content, encoding: utf8);
+
+      if (!mounted) return;
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: mimeType)],
+        subject: 'Mis hábitos – $_rangeLabel',
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Error al exportar: $e'),
+          backgroundColor: AppColors.dangerColor,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
+  String _fmt(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  String _estado(Map<String, dynamic> log) {
+    if (log['completed'] == true) return 'completado';
+    if (log['manually_failed'] == true) return 'fallado';
+    return 'pendiente';
+  }
+
+  String _csvEscape(String s) {
+    if (s.contains(',') || s.contains('"') || s.contains('\n')) {
+      return '"${s.replaceAll('"', '""')}"';
+    }
+    return s;
+  }
+
+  String _buildCsv(
+    List<Map<String, dynamic>> logs,
+    Map<String, Map<String, String>> habitMap,
+    Map<String, String> noteMap,
+  ) {
+    final buf = StringBuffer();
+    buf.writeln('fecha,habito,categoria,estado,hora_completacion,nota_dia');
+    for (final log in logs) {
+      final hid  = log['habit_id'] as String;
+      final date = log['log_date'] as String;
+      buf.writeln([
+        date,
+        _csvEscape(habitMap[hid]?['name']     ?? hid),
+        _csvEscape(habitMap[hid]?['category'] ?? ''),
+        _estado(log),
+        _parseHora(log['completed_at']),
+        _csvEscape(noteMap[date] ?? ''),
+      ].join(','));
+    }
+    return buf.toString();
+  }
+
+  String _parseHora(dynamic completedAt) {
+    if (completedAt == null) return '';
+    try {
+      final dt = DateTime.parse(completedAt as String).toLocal();
+      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  String _buildJson(
+    List<Map<String, dynamic>> logs,
+    Map<String, Map<String, String>> habitMap,
+    Map<String, String> noteMap,
+    DateTime from,
+    DateTime to,
+  ) {
+    final byDate = <String, List<Map<String, dynamic>>>{};
+    for (final log in logs) {
+      byDate.putIfAbsent(log['log_date'] as String, () => []).add(log);
+    }
+
+    final historial = byDate.entries.map((e) => {
+      'fecha':   e.key,
+      'nota':    noteMap[e.key] ?? '',
+      'habitos': e.value.map((log) {
+        final hid = log['habit_id'] as String;
+        return {
+          'id':                hid,
+          'nombre':            habitMap[hid]?['name']     ?? hid,
+          'categoria':         habitMap[hid]?['category'] ?? '',
+          'estado':            _estado(log),
+          'hora_completacion': _parseHora(log['completed_at']),
+        };
+      }).toList(),
+    }).toList()
+      ..sort((a, b) => (a['fecha'] as String).compareTo(b['fecha'] as String));
+
+    final result = {
+      'metadatos': {
+        'exportado_el':    _fmt(DateTime.now()),
+        'rango_inicio':    _fmt(from),
+        'rango_fin':       _fmt(to),
+        'total_registros': logs.length,
+      },
+      'habitos': habitMap.entries.map((e) => {
+        'id':        e.key,
+        'nombre':    e.value['name'],
+        'categoria': e.value['category'],
+      }).toList(),
+      'historial': historial,
+    };
+
+    const encoder = JsonEncoder.withIndent('  ');
+    return encoder.convert(result);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 24, right: 24, top: 24,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 32,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 36, height: 4,
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceElevated,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          Text('Exportar mis datos',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 20, fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary,
+              )),
+          const SizedBox(height: 24),
+
+          Text('RANGO', style: GoogleFonts.inter(
+              fontSize: 11, fontWeight: FontWeight.w600,
+              letterSpacing: 1.5, color: AppColors.textSecondary)),
+          const SizedBox(height: 10),
+          Row(
+            children: _ExportRange.values.map((r) {
+              final label = switch (r) {
+                _ExportRange.week  => 'Última\nsemana',
+                _ExportRange.month => 'Último\nmes',
+                _ExportRange.all   => 'Todo',
+              };
+              return Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: _ChoiceChip(
+                    label: label,
+                    selected: r == _range,
+                    onTap: () => setState(() => _range = r),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 20),
+
+          Text('FORMATO', style: GoogleFonts.inter(
+              fontSize: 11, fontWeight: FontWeight.w600,
+              letterSpacing: 1.5, color: AppColors.textSecondary)),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: _ChoiceChip(
+                label: 'CSV', sublabel: 'una fila por registro',
+                selected: _format == _ExportFormat.csv,
+                onTap: () => setState(() => _format = _ExportFormat.csv),
+              )),
+              const SizedBox(width: 10),
+              Expanded(child: _ChoiceChip(
+                label: 'JSON', sublabel: 'estructura anidada',
+                selected: _format == _ExportFormat.json,
+                onTap: () => setState(() => _format = _ExportFormat.json),
+              )),
+            ],
+          ),
+          const SizedBox(height: 28),
+
+          GradientButton(
+            label: _exporting ? 'Exportando…' : 'Exportar',
+            onPressed: _exporting ? null : _export,
+            isLoading: _exporting,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChoiceChip extends StatelessWidget {
+  final String label;
+  final String? sublabel;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ChoiceChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.sublabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+        decoration: BoxDecoration(
+          color: selected
+              ? AppColors.primaryAccent.withValues(alpha: 0.15)
+              : AppColors.surfaceElevated,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? AppColors.primaryAccent : Colors.transparent,
+            width: 1.5,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: GoogleFonts.inter(
+              fontSize: 14, fontWeight: FontWeight.w600,
+              color: selected ? AppColors.primaryAccent : AppColors.textPrimary,
+            )),
+            if (sublabel != null) ...[
+              const SizedBox(height: 2),
+              Text(sublabel!, style: GoogleFonts.inter(
+                fontSize: 11, color: AppColors.textSecondary,
+              )),
+            ],
+          ],
+        ),
       ),
     );
   }

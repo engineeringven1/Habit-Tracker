@@ -12,7 +12,16 @@ import '../../core/theme/dark_mode_provider.dart';
 import '../../core/theme/palette_provider.dart';
 import '../../data/models/reminder.dart';
 import '../../data/repositories/seed_repository.dart';
-import '../mentor/mentor_providers.dart' show aiKeyProvider;
+import '../../data/models/daily_log.dart';
+import '../../data/models/daily_note.dart';
+import '../../data/models/habit.dart';
+import 'package:confetti/confetti.dart';
+import '../../shared/utils/share_achievement.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../habits/habits_providers.dart' show habitsNotifierProvider;
+import '../mentor/mentor_providers.dart'
+    show aiKeyProvider, mentorProvider, pendingMilestonesProvider, MilestonePending;
+import 'note_providers.dart';
 import 'tracker_providers.dart';
 import 'widgets/habit_card.dart';
 import 'widgets/score_ring.dart';
@@ -26,6 +35,11 @@ class TrackerScreen extends ConsumerStatefulWidget {
 
 class _TrackerScreenState extends ConsumerState<TrackerScreen> {
   bool _localeReady = false;
+  bool _milestonesChecked = false;
+  final Map<String, GlobalKey> _habitKeys = {};
+
+  static String _fmtDate(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
   @override
   void initState() {
@@ -34,6 +48,70 @@ class _TrackerScreenState extends ConsumerState<TrackerScreen> {
       if (mounted) setState(() => _localeReady = true);
     });
     _seedOnFirstLaunch();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkMondayPlan());
+  }
+
+  // ─── 1B: Monday plan check ────────────────────────────────────────────────
+
+  Future<void> _checkMondayPlan() async {
+    if (!mounted) return;
+    final today = DateTime.now();
+    if (today.weekday != DateTime.monday) return;
+    final apiKey = ref.read(aiKeyProvider);
+    if (apiKey == null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final todayStr = _fmtDate(today);
+    if (prefs.getString('weekly_plan_monday') == todayStr) return;
+    await prefs.setString('weekly_plan_monday', todayStr);
+
+    if (!mounted) return;
+    try {
+      final plan = await ref.read(mentorProvider.notifier).generateWeeklyPlan();
+      if (mounted) _showWeeklyPlanSheet(plan);
+    } catch (_) {}
+  }
+
+  void _showWeeklyPlanSheet(String plan) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surfaceCard,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => _WeeklyPlanSheet(
+        plan: plan,
+        onSave: () async {
+          await ref.read(mentorProvider.notifier).saveWeeklyPlan(plan);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Plan guardado en Mentor ✓')),
+            );
+          }
+        },
+      ),
+    );
+  }
+
+  // ─── 1D: Milestone celebration ────────────────────────────────────────────
+
+  Future<void> _showMilestoneCelebrations(List<MilestonePending> pending) async {
+    for (final p in pending) {
+      if (!mounted) return;
+      await showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: AppColors.surfaceCard,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+        builder: (_) => _MilestoneSheet(pending: p),
+      );
+      if (!mounted) return;
+      await ref
+          .read(habitsNotifierProvider.notifier)
+          .addCelebratedMilestone(p.habit.id, p.milestone);
+      ref.invalidate(pendingMilestonesProvider);
+    }
   }
 
   void _seedOnFirstLaunch() {
@@ -128,17 +206,65 @@ class _TrackerScreenState extends ConsumerState<TrackerScreen> {
     );
   }
 
-  String _habitSectionTitle(DateTime date) {
-    final today = DateTime.now();
-    if (_isSameDay(date, today)) return 'HOY';
-    final yesterday = today.subtract(const Duration(days: 1));
-    if (_isSameDay(date, yesterday)) return 'AYER';
-    if (!_localeReady) return '${date.day}/${date.month}/${date.year}';
-    return DateFormat("d 'DE' MMMM", 'es').format(date).toUpperCase();
+  void _showEditLogSheet(dynamic habit, DailyLog? log, DateTime date) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _EditLogSheet(
+        habitName: habit.name as String,
+        log: log,
+        logDate: date,
+        onSave: ({required bool completed, required bool manuallyFailed, DateTime? completedAt}) =>
+            ref.read(dailyLogsProvider.notifier).updateLog(
+              habit.id as String,
+              completed: completed,
+              manuallyFailed: manuallyFailed,
+              completedAt: completedAt,
+            ),
+      ),
+    );
   }
+
+  void _showNoteSheet() {
+    final existingText = ref.read(dailyNoteProvider).value?.noteText;
+    final date = ref.read(selectedDateProvider);
+    final dateLabel = _localeReady
+        ? () {
+            final raw =
+                DateFormat("EEEE, d 'de' MMMM", 'es').format(date);
+            return raw[0].toUpperCase() + raw.substring(1);
+          }()
+        : '${date.day}/${date.month}/${date.year}';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _NoteBottomSheet(
+        existingText: existingText,
+        dateLabel: dateLabel,
+        onSave: (text) => ref.read(dailyNoteProvider.notifier).save(text),
+      ),
+    );
+  }
+
 
   @override
   Widget build(BuildContext context) {
+    // 1D: milestone celebration — fires once when provider first resolves
+    ref.listen<AsyncValue<List<MilestonePending>>>(
+        pendingMilestonesProvider, (_, next) {
+      next.whenData((pending) {
+        if (_milestonesChecked || pending.isEmpty) return;
+        _milestonesChecked = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _showMilestoneCelebrations(pending);
+        });
+      });
+      if (next is AsyncData) _milestonesChecked = true;
+    });
+
     final habitsAsync = ref.watch(habitsProvider);
     final remindersAsync = ref.watch(remindersProvider);
     final logsAsync = ref.watch(dailyLogsProvider);
@@ -146,15 +272,38 @@ class _TrackerScreenState extends ConsumerState<TrackerScreen> {
     final selectedDate = ref.watch(selectedDateProvider);
 
     final today = DateTime.now();
+    String weekdayName(DateTime d) {
+      if (_localeReady) {
+        final raw = DateFormat('EEEE', 'es').format(d);
+        return raw[0].toUpperCase() + raw.substring(1);
+      }
+      const abbr = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+      return abbr[d.weekday - 1];
+    }
+
     final String dateLabel;
     if (_isSameDay(selectedDate, today)) {
-      dateLabel = 'Hoy';
+      dateLabel = 'Hoy · ${weekdayName(selectedDate)}';
     } else if (_isSameDay(selectedDate, today.subtract(const Duration(days: 1)))) {
-      dateLabel = 'Ayer';
+      dateLabel = 'Ayer · ${weekdayName(selectedDate)}';
     } else if (_localeReady) {
-      dateLabel = DateFormat("d MMM", 'es').format(selectedDate);
+      final raw = DateFormat("EEEE, d 'de' MMMM", 'es').format(selectedDate);
+      dateLabel = raw[0].toUpperCase() + raw.substring(1);
     } else {
       dateLabel = '${selectedDate.day}/${selectedDate.month}';
+    }
+
+    final todayHabits = habitsAsync.value ?? <Habit>[];
+    final todayLogs   = logsAsync.value   ?? <DailyLog>[];
+    final Map<String, ({int done, int total})> catProgress = {};
+    for (final h in todayHabits) {
+      if (!h.daysOfWeek.contains(selectedDate.weekday)) continue;
+      final isDone = todayLogs.any((l) => l.habitId == h.id && l.completed);
+      final cur = catProgress[h.category] ?? (done: 0, total: 0);
+      catProgress[h.category] = (
+        done: cur.done + (isDone ? 1 : 0),
+        total: cur.total + 1,
+      );
     }
 
     return Scaffold(
@@ -232,13 +381,48 @@ class _TrackerScreenState extends ConsumerState<TrackerScreen> {
               child: _ScoreCard(score: score, dateLabel: dateLabel),
             ),
 
+            // ── SLIVER 2.2: Category chips ────────────────────────────────
+            SliverToBoxAdapter(
+              child: _CategoryChipRow(
+                catProgress: catProgress,
+                onTap: (category) {
+                  Habit? target;
+                  for (final h in todayHabits) {
+                    if (h.category != category) continue;
+                    if (!h.daysOfWeek.contains(selectedDate.weekday)) continue;
+                    final log = todayLogs.where((l) => l.habitId == h.id).firstOrNull;
+                    if (!(log?.completed ?? false) && !(log?.manuallyFailed ?? false)) {
+                      target = h;
+                      break;
+                    }
+                    target ??= h;
+                  }
+                  if (target == null) return;
+                  final key = _habitKeys[target.id];
+                  if (key?.currentContext != null) {
+                    Scrollable.ensureVisible(
+                      key!.currentContext!,
+                      duration: const Duration(milliseconds: 400),
+                      curve: Curves.easeInOut,
+                      alignment: 0.15,
+                    );
+                  }
+                },
+              ),
+            ),
+
+            // ── SLIVER 2.3: Daily note button ─────────────────────────────
+            SliverToBoxAdapter(
+              child: _NoteButton(
+                noteAsync: ref.watch(dailyNoteProvider),
+                onTap: _showNoteSheet,
+              ),
+            ),
+
             // ── SLIVER 2.5: Date selector ─────────────────────────────────
             const SliverToBoxAdapter(child: _DateSelector()),
 
-            // ── SLIVER 3: Habits ──────────────────────────────────────────
-            SliverToBoxAdapter(
-              child: _sectionTitle(_habitSectionTitle(selectedDate)),
-            ),
+            // ── SLIVER 3+4: Pending / Completed habits ────────────────────
             habitsAsync.when(
               data: (habits) {
                 if (habits.isEmpty) {
@@ -247,31 +431,78 @@ class _TrackerScreenState extends ConsumerState<TrackerScreen> {
                   );
                 }
                 final weekday = selectedDate.weekday;
+                final isPastDay = !_isSameDay(selectedDate, today);
                 return logsAsync.when(
-                  data: (logs) => SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (_, i) {
-                        final habit = habits[i];
-                        final scheduledToday =
-                            habit.daysOfWeek.contains(weekday);
-                        final completed = !scheduledToday ||
-                            logs.any(
-                                (l) => l.habitId == habit.id && l.completed);
-                        return HabitCard(
-                          key: ValueKey(habit.id),
-                          habit: habit,
-                          completed: completed,
-                          scheduledToday: scheduledToday,
-                          onToggle: scheduledToday
-                              ? (val) => ref
-                                  .read(dailyLogsProvider.notifier)
-                                  .toggle(habit.id, val)
-                              : null,
-                        );
-                      },
-                      childCount: habits.length,
-                    ),
-                  ),
+                  data: (logs) {
+                    final pending = <dynamic>[];
+                    final completed = <dynamic>[];
+                    for (final habit in habits) {
+                      final scheduledToday =
+                          habit.daysOfWeek.contains(weekday);
+                      final log = logs.where(
+                          (l) => l.habitId == habit.id).firstOrNull;
+                      final isDone = !scheduledToday ||
+                          (log?.completed ?? false);
+                      final isFailed = log?.manuallyFailed ?? false;
+                      // Pending = scheduled today, not done, not manually failed
+                      if (scheduledToday && !isDone && !isFailed) {
+                        pending.add(habit);
+                      } else {
+                        completed.add(habit);
+                      }
+                    }
+
+                    Widget buildCard(dynamic habit) {
+                      final scheduledToday =
+                          habit.daysOfWeek.contains(weekday);
+                      final log = logs.where(
+                          (l) => l.habitId == habit.id).firstOrNull;
+                      final isDone = !scheduledToday ||
+                          (log?.completed ?? false);
+                      final isFailed = log?.manuallyFailed ?? false;
+                      return HabitCard(
+                        key: _habitKeys.putIfAbsent(habit.id as String, () => GlobalKey()),
+                        habit: habit,
+                        completed: isDone,
+                        manuallyFailed: isFailed,
+                        scheduledToday: scheduledToday,
+                        isPastDay: isPastDay,
+                        onToggle: scheduledToday
+                            ? (val) => ref
+                                .read(dailyLogsProvider.notifier)
+                                .toggle(habit.id, val)
+                            : null,
+                        onMarkFailed: (!isPastDay && scheduledToday)
+                            ? () => ref
+                                .read(dailyLogsProvider.notifier)
+                                .markFailed(habit.id, true)
+                            : null,
+                        onUnmarkFailed: isFailed
+                            ? () => ref
+                                .read(dailyLogsProvider.notifier)
+                                .markFailed(habit.id, false)
+                            : null,
+                        onLongPress: () =>
+                            _showEditLogSheet(habit, log, selectedDate),
+                      );
+                    }
+
+                    return SliverToBoxAdapter(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (pending.isNotEmpty) ...[
+                            _sectionTitle('HÁBITOS PENDIENTES'),
+                            ...pending.map(buildCard),
+                          ],
+                          if (completed.isNotEmpty) ...[
+                            _sectionTitle('HÁBITOS COMPLETADOS'),
+                            ...completed.map(buildCard),
+                          ],
+                        ],
+                      ),
+                    );
+                  },
                   loading: () => const SliverToBoxAdapter(
                     child: _LoadingIndicator(),
                   ),
@@ -460,6 +691,476 @@ class _DateSelector extends ConsumerWidget {
                         ref.read(selectedDateProvider.notifier).state = next;
                       }
                     },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Edit Log Sheet ───────────────────────────────────────────────────────────
+
+class _EditLogSheet extends StatefulWidget {
+  final String habitName;
+  final DailyLog? log;
+  final DateTime logDate;
+  final Future<void> Function({
+    required bool completed,
+    required bool manuallyFailed,
+    DateTime? completedAt,
+  }) onSave;
+
+  const _EditLogSheet({
+    required this.habitName,
+    this.log,
+    required this.logDate,
+    required this.onSave,
+  });
+
+  @override
+  State<_EditLogSheet> createState() => _EditLogSheetState();
+}
+
+class _EditLogSheetState extends State<_EditLogSheet> {
+  late String _status; // 'pending' | 'completed' | 'failed'
+  late DateTime _completedAt;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final log = widget.log;
+    if (log?.completed == true) {
+      _status = 'completed';
+      _completedAt = log?.completedAt ?? DateTime.now();
+    } else if (log?.manuallyFailed == true) {
+      _status = 'failed';
+      _completedAt = DateTime.now();
+    } else {
+      _status = 'pending';
+      _completedAt = DateTime.now();
+    }
+  }
+
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: _completedAt.hour, minute: _completedAt.minute),
+    );
+    if (picked == null) return;
+    setState(() {
+      _completedAt = DateTime(
+        widget.logDate.year, widget.logDate.month, widget.logDate.day,
+        picked.hour, picked.minute,
+      );
+    });
+  }
+
+  String _formatTime() {
+    final h = _completedAt.hour;
+    final m = _completedAt.minute.toString().padLeft(2, '0');
+    final ampm = h < 12 ? 'am' : 'pm';
+    final h12 = h == 0 ? 12 : h > 12 ? h - 12 : h;
+    return '$h12:$m $ampm';
+  }
+
+  Widget _chip(String value, IconData icon, String label, Color color) {
+    final selected = _status == value;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() {
+          _status = value;
+          if (value == 'completed') {
+            _completedAt = widget.log?.completedAt ?? DateTime.now();
+          }
+        }),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: selected
+                ? color.withValues(alpha: 0.15)
+                : AppColors.surfaceElevated,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? color.withValues(alpha: 0.5) : Colors.transparent,
+              width: 1.5,
+            ),
+          ),
+          child: Column(
+            children: [
+              Icon(icon, size: 20, color: selected ? color : AppColors.textSecondary),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: GoogleFonts.inter(
+                  fontSize: 10,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  color: selected ? color : AppColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surfaceCard,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.textSecondary.withValues(alpha: 0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Icon(Icons.edit_calendar_rounded,
+                    color: AppColors.primaryAccent, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    widget.habitName,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 17, fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Text('Editar registro',
+                style: GoogleFonts.inter(
+                    fontSize: 12, color: AppColors.textSecondary)),
+            const SizedBox(height: 20),
+            Text('Estado',
+                style: GoogleFonts.inter(
+                    fontSize: 12, fontWeight: FontWeight.w500,
+                    color: AppColors.textSecondary)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _chip('pending', Icons.hourglass_empty_rounded,
+                    'Pendiente', AppColors.textSecondary),
+                const SizedBox(width: 8),
+                _chip('completed', Icons.check_circle_rounded,
+                    'Completado', AppColors.successColor),
+                const SizedBox(width: 8),
+                _chip('failed', Icons.cancel_rounded,
+                    'Fallido', AppColors.dangerColor),
+              ],
+            ),
+            if (_status == 'completed') ...[
+              const SizedBox(height: 16),
+              Text('Hora de completación',
+                  style: GoogleFonts.inter(
+                      fontSize: 12, fontWeight: FontWeight.w500,
+                      color: AppColors.textSecondary)),
+              const SizedBox(height: 8),
+              GestureDetector(
+                onTap: _pickTime,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 14),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceElevated,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.access_time_rounded,
+                          size: 18, color: AppColors.primaryAccent),
+                      const SizedBox(width: 10),
+                      Text(
+                        _formatTime(),
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 20, fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const Spacer(),
+                      Icon(Icons.edit_rounded,
+                          size: 15, color: AppColors.textSecondary),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _saving
+                    ? null
+                    : () async {
+                        setState(() => _saving = true);
+                        final nav = Navigator.of(context);
+                        await widget.onSave(
+                          completed: _status == 'completed',
+                          manuallyFailed: _status == 'failed',
+                          completedAt: _status == 'completed'
+                              ? _completedAt
+                              : null,
+                        );
+                        if (!mounted) return;
+                        nav.pop();
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primaryAccent,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor:
+                      AppColors.primaryAccent.withValues(alpha: 0.4),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                child: _saving
+                    ? const SizedBox(
+                        width: 20, height: 20,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : Text('Guardar cambios',
+                        style: GoogleFonts.plusJakartaSans(
+                            fontWeight: FontWeight.w600, fontSize: 15)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Note Button ─────────────────────────────────────────────────────────────
+
+class _NoteButton extends StatelessWidget {
+  final AsyncValue<DailyNote?> noteAsync;
+  final VoidCallback onTap;
+
+  const _NoteButton({required this.noteAsync, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final note = noteAsync.value;
+    final hasNote = note != null;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+      child: GestureDetector(
+        onTap: noteAsync.isLoading ? null : onTap,
+        behavior: HitTestBehavior.opaque,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              hasNote
+                  ? Icons.edit_note_rounded
+                  : Icons.add_rounded,
+              size: 15,
+              color: AppColors.textSecondary.withValues(alpha: 0.6),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              hasNote ? 'Ver nota del día' : '+ Añadir nota del día',
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                color: AppColors.textSecondary.withValues(alpha: 0.6),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Note Bottom Sheet ────────────────────────────────────────────────────────
+
+class _NoteBottomSheet extends StatefulWidget {
+  final String? existingText;
+  final String dateLabel;
+  final Future<void> Function(String text) onSave;
+
+  const _NoteBottomSheet({
+    this.existingText,
+    required this.dateLabel,
+    required this.onSave,
+  });
+
+  @override
+  State<_NoteBottomSheet> createState() => _NoteBottomSheetState();
+}
+
+class _NoteBottomSheetState extends State<_NoteBottomSheet> {
+  late final TextEditingController _ctrl;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.existingText ?? '');
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEditing = widget.existingText != null;
+    final count = _ctrl.text.length;
+
+    return Padding(
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surfaceCard,
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Handle bar
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.textSecondary.withValues(alpha: 0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Icon(
+                  isEditing
+                      ? Icons.edit_note_rounded
+                      : Icons.note_add_outlined,
+                  color: AppColors.primaryAccent,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  isEditing ? 'Editar nota del día' : 'Nota del día',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 3),
+            Text(
+              widget.dateLabel,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _ctrl,
+              autofocus: true,
+              maxLength: 300,
+              maxLines: 5,
+              minLines: 3,
+              buildCounter: (_, {required currentLength, required maxLength, required isFocused}) => null,
+              style: GoogleFonts.inter(
+                  fontSize: 14, color: AppColors.textPrimary),
+              decoration: InputDecoration(
+                hintText:
+                    '¿Cómo fue tu día? ¿Qué te ayudó o dificultó?',
+                hintStyle: GoogleFonts.inter(
+                  fontSize: 13,
+                  color: AppColors.textSecondary.withValues(alpha: 0.45),
+                ),
+                filled: true,
+                fillColor: AppColors.surfaceElevated,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.all(14),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Text(
+                '$count / 300',
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  color: count > 280
+                      ? AppColors.dangerColor
+                      : AppColors.textSecondary,
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed:
+                    _saving || _ctrl.text.trim().isEmpty
+                        ? null
+                        : () async {
+                            setState(() => _saving = true);
+                            final nav = Navigator.of(context);
+                            await widget.onSave(_ctrl.text);
+                            if (!mounted) return;
+                            nav.pop();
+                          },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primaryAccent,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor:
+                      AppColors.primaryAccent.withValues(alpha: 0.4),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                ),
+                child: _saving
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : Text(
+                        'Guardar',
+                        style: GoogleFonts.plusJakartaSans(
+                            fontWeight: FontWeight.w600, fontSize: 15),
+                      ),
+              ),
             ),
           ],
         ),
@@ -915,6 +1616,15 @@ class _UserMenuSheet extends ConsumerWidget {
             ),
             Divider(height: 1, color: AppColors.surfaceElevated),
             _MenuItem(
+              icon: Icons.notifications_active_rounded,
+              label: 'Probar notificaciones',
+              onTap: () async {
+                await NotificationService.requestPermission();
+                await NotificationService.showTestNotification();
+              },
+            ),
+            Divider(height: 1, color: AppColors.surfaceElevated),
+            _MenuItem(
               icon: Icons.logout_rounded,
               label: 'Cerrar sesión',
               color: AppColors.dangerColor,
@@ -1187,6 +1897,104 @@ class _PasswordField extends StatelessWidget {
   }
 }
 
+// ─── Category Chip Row ────────────────────────────────────────────────────────
+
+class _CategoryChipRow extends StatelessWidget {
+  final Map<String, ({int done, int total})> catProgress;
+  final void Function(String category) onTap;
+
+  const _CategoryChipRow({required this.catProgress, required this.onTap});
+
+  static const _palette = [
+    Color(0xFF7C3AED),
+    Color(0xFF06B6D4),
+    Color(0xFF10B981),
+    Color(0xFFF59E0B),
+    Color(0xFFEF4444),
+    Color(0xFF8B5CF6),
+    Color(0xFF3B82F6),
+    Color(0xFFEC4899),
+    Color(0xFF14B8A6),
+    Color(0xFFF97316),
+  ];
+
+  static Color _colorFor(String category) =>
+      _palette[category.hashCode.abs() % _palette.length];
+
+  @override
+  Widget build(BuildContext context) {
+    if (catProgress.isEmpty) return const SizedBox.shrink();
+
+    final sorted = catProgress.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      child: Row(
+        children: sorted.map((entry) {
+          final cat = entry.key;
+          final done = entry.value.done;
+          final total = entry.value.total;
+          final pct = total == 0 ? 0.0 : done / total;
+          final catColor = _colorFor(cat);
+
+          final Color bg;
+          final Color textColor;
+          if (pct <= 0) {
+            bg = AppColors.surfaceElevated;
+            textColor = AppColors.textSecondary;
+          } else if (pct >= 1.0) {
+            bg = catColor;
+            textColor = Colors.white;
+          } else {
+            bg = Color.lerp(AppColors.surfaceElevated, catColor, pct)!;
+            textColor = Color.lerp(AppColors.textSecondary, Colors.white, pct)!;
+          }
+
+          final shortName = cat.length > 6 ? '${cat.substring(0, 5)}…' : cat;
+          final pctStr = '${(pct * 100).round()}%';
+
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => onTap(cat),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 2),
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                decoration: BoxDecoration(
+                  color: bg,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      shortName,
+                      style: GoogleFonts.inter(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w500,
+                        color: textColor,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      pctStr,
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: textColor.withValues(alpha: 0.9),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+}
+
 // ─── Gemini Key Dialog ────────────────────────────────────────────────────────
 
 class _GeminiKeyDialog extends ConsumerStatefulWidget {
@@ -1367,6 +2175,274 @@ class _GeminiKeyDialogState extends ConsumerState<_GeminiKeyDialog> {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ─── 1B: Weekly plan bottom sheet ────────────────────────────────────────────
+
+class _WeeklyPlanSheet extends StatelessWidget {
+  final String plan;
+  final VoidCallback onSave;
+
+  const _WeeklyPlanSheet({required this.plan, required this.onSave});
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = plan
+        .split('\n')
+        .where((l) => l.trim().isNotEmpty)
+        .take(3)
+        .toList();
+
+    return Padding(
+      padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom + 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            margin: const EdgeInsets.only(top: 12, bottom: 20),
+            width: 40, height: 4,
+            decoration: BoxDecoration(
+              color: AppColors.textSecondary.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Row(children: [
+              Container(
+                width: 40, height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.secondaryAccent.withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                ),
+                alignment: Alignment.center,
+                child: Icon(Icons.calendar_today_rounded,
+                    color: AppColors.secondaryAccent, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Plan para esta semana',
+                    style: GoogleFonts.plusJakartaSans(
+                        fontSize: 18, fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary)),
+                Text('3 prioridades concretas',
+                    style: GoogleFonts.inter(
+                        fontSize: 13, color: AppColors.textSecondary)),
+              ]),
+            ]),
+          ),
+          const SizedBox(height: 20),
+          ...lines.asMap().entries.map((e) {
+            final parts = e.value.split(':');
+            final habit = parts.first.trim();
+            final action = parts.length > 1 ? parts.sublist(1).join(':').trim() : '';
+            return Container(
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                  color: AppColors.surfaceElevated,
+                  borderRadius: BorderRadius.circular(14)),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Container(
+                  width: 28, height: 28,
+                  margin: const EdgeInsets.only(right: 12, top: 2),
+                  decoration: BoxDecoration(
+                      color: AppColors.secondaryAccent.withValues(alpha: 0.15),
+                      shape: BoxShape.circle),
+                  alignment: Alignment.center,
+                  child: Text('${e.key + 1}',
+                      style: GoogleFonts.inter(
+                          fontSize: 13, fontWeight: FontWeight.w700,
+                          color: AppColors.secondaryAccent)),
+                ),
+                Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(habit, style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14, fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary)),
+                    if (action.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(action, style: GoogleFonts.inter(
+                          fontSize: 13, color: AppColors.textSecondary,
+                          height: 1.4)),
+                    ],
+                  ],
+                )),
+              ]),
+            );
+          }),
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(children: [
+              Expanded(child: OutlinedButton(
+                onPressed: () => Navigator.pop(context),
+                style: OutlinedButton.styleFrom(
+                  side: BorderSide(color: AppColors.textSecondary.withValues(alpha: 0.3)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                ),
+                child: Text('Cerrar', style: GoogleFonts.inter(
+                    fontWeight: FontWeight.w600, color: AppColors.textSecondary)),
+              )),
+              const SizedBox(width: 10),
+              Expanded(child: ElevatedButton(
+                onPressed: () { Navigator.pop(context); onSave(); },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.secondaryAccent,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                ),
+                child: Text('Guardar en Mentor',
+                    style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
+              )),
+            ]),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── 1D: Milestone celebration sheet ────────────────────────────────────────
+
+class _MilestoneSheet extends StatefulWidget {
+  final MilestonePending pending;
+  const _MilestoneSheet({required this.pending});
+
+  @override
+  State<_MilestoneSheet> createState() => _MilestoneSheetState();
+}
+
+class _MilestoneSheetState extends State<_MilestoneSheet> {
+  late final ConfettiController _confetti;
+
+  @override
+  void initState() {
+    super.initState();
+    _confetti = ConfettiController(duration: const Duration(seconds: 4));
+    _confetti.play();
+  }
+
+  @override
+  void dispose() {
+    _confetti.dispose();
+    super.dispose();
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.pending;
+    return Stack(
+      alignment: Alignment.topCenter,
+      children: [
+        ConfettiWidget(
+          confettiController: _confetti,
+          blastDirectionality: BlastDirectionality.explosive,
+          shouldLoop: false,
+          numberOfParticles: 30,
+          colors: const [
+            Color(0xFF7C3AED), Color(0xFF06B6D4),
+            Color(0xFFF59E0B), Color(0xFF10B981),
+          ],
+        ),
+        Padding(
+          padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom + 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 24),
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.textSecondary.withValues(alpha: 0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const Text('🏆', style: TextStyle(fontSize: 56)),
+              const SizedBox(height: 16),
+              Text('${p.milestone} DÍAS',
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 38, fontWeight: FontWeight.w800,
+                      color: AppColors.warningColor, height: 1)),
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(p.habit.name, textAlign: TextAlign.center,
+                    style: GoogleFonts.plusJakartaSans(
+                        fontSize: 20, fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary)),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 24),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.warningColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                      color: AppColors.warningColor.withValues(alpha: 0.3)),
+                ),
+                child: Text(p.label, textAlign: TextAlign.center,
+                    style: GoogleFonts.inter(
+                        fontSize: 14, fontWeight: FontWeight.w600,
+                        color: AppColors.warningColor, height: 1.4)),
+              ),
+              const SizedBox(height: 28),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(children: [
+                  Expanded(child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: OutlinedButton.styleFrom(
+                      side: BorderSide(
+                          color: AppColors.textSecondary.withValues(alpha: 0.3)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                    ),
+                    child: Text('Cerrar', style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary)),
+                  )),
+                  const SizedBox(width: 10),
+                  Expanded(child: ElevatedButton.icon(
+                    onPressed: () {
+                      final p = widget.pending;
+                      shareAchievementImage(
+                        context,
+                        title: p.label,
+                        subtitle: '${p.milestone} días seguidos con "${p.habit.name}"',
+                        topEmoji: '🏆',
+                      );
+                      Navigator.pop(context);
+                    },
+                    icon: const Icon(Icons.share_rounded, size: 16),
+                    label: Text('Compartir',
+                        style: GoogleFonts.inter(fontWeight: FontWeight.w600)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.warningColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 13),
+                    ),
+                  )),
+                ]),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

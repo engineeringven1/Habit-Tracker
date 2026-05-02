@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/services/notification_service.dart';
@@ -7,6 +9,7 @@ import '../../data/models/reminder.dart';
 import '../../data/repositories/habit_repository.dart';
 import '../../data/repositories/log_repository.dart';
 import '../../data/repositories/reminder_repository.dart';
+import '../widget/widget_service.dart';
 
 // ─── Repository Providers ────────────────────────────────────────────────────
 
@@ -95,6 +98,9 @@ class DailyLogsNotifier
       return;
     }
 
+    // Widget update — non-critical, fire and forget.
+    unawaited(_updateWidget());
+
     // Notifications are secondary — errors here must not undo the saved log.
     final now = DateTime.now();
     final isToday = date.year == now.year &&
@@ -117,6 +123,167 @@ class DailyLogsNotifier
       } catch (_) {
         // Notification errors are non-critical.
       }
+    }
+  }
+
+  Future<void> updateLog(
+    String habitId, {
+    required bool completed,
+    required bool manuallyFailed,
+    DateTime? completedAt,
+  }) async {
+    final current = state.value ?? [];
+    final exists = current.any((l) => l.habitId == habitId);
+    if (exists) {
+      state = AsyncData(current
+          .map((l) => l.habitId == habitId
+              ? l.copyWith(
+                  completed: completed,
+                  manuallyFailed: manuallyFailed,
+                  completedAt: completed ? completedAt : null,
+                  clearCompletedAt: !completed,
+                )
+              : l)
+          .toList());
+    } else if (completed || manuallyFailed) {
+      final now = DateTime.now();
+      state = AsyncData([
+        ...current,
+        DailyLog(
+          id: '',
+          userId: '',
+          habitId: habitId,
+          logDate: date,
+          completed: completed,
+          manuallyFailed: manuallyFailed,
+          completedAt: completed ? completedAt : null,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      ]);
+    }
+    try {
+      await _repo.upsertLog(
+        habitId, date, completed,
+        manuallyFailed: manuallyFailed,
+        completedAt: completedAt,
+      );
+      final fresh = await _repo.getLogsForDate(date);
+      state = AsyncData(fresh);
+    } catch (_) {
+      await loadLogs();
+    }
+
+    unawaited(_updateWidget());
+  }
+
+  Future<void> markFailed(String habitId, bool failed) async {
+    final current = state.value ?? [];
+
+    // Optimistic update
+    final exists = current.any((l) => l.habitId == habitId);
+    if (exists) {
+      state = AsyncData(current
+          .map((l) => l.habitId == habitId
+              ? l.copyWith(
+                  completed: false,
+                  manuallyFailed: failed,
+                  clearCompletedAt: true,
+                )
+              : l)
+          .toList());
+    } else if (failed) {
+      final now = DateTime.now();
+      state = AsyncData([
+        ...current,
+        DailyLog(
+          id: '',
+          userId: '',
+          habitId: habitId,
+          logDate: date,
+          completed: false,
+          manuallyFailed: true,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      ]);
+    }
+
+    try {
+      await _repo.upsertLog(habitId, date, false, manuallyFailed: failed);
+      final fresh = await _repo.getLogsForDate(date);
+      state = AsyncData(fresh);
+    } catch (_) {
+      await loadLogs();
+    }
+
+    unawaited(_updateWidget());
+  }
+
+  Future<void> _updateWidget() async {
+    try {
+      final habits = _ref.read(habitsProvider).value ?? [];
+      if (habits.isEmpty) return;
+
+      final logs = state.value ?? [];
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final weekday = today.weekday;
+
+      int completed = 0;
+      final total = habits.length;
+      for (final h in habits) {
+        if (!h.daysOfWeek.contains(weekday)) {
+          completed++;
+        } else if (logs.any((l) => l.habitId == h.id && l.completed)) {
+          completed++;
+        }
+      }
+
+      final pending = habits.where((h) {
+        if (!h.daysOfWeek.contains(weekday)) return false;
+        return !logs.any((l) => l.habitId == h.id && l.completed);
+      }).toList();
+
+      if (pending.isEmpty) {
+        await WidgetService.update(
+          completed: completed,
+          total: total,
+          worstPendingHabitNames: [],
+        );
+        return;
+      }
+
+      final client = Supabase.instance.client;
+      final userId = client.auth.currentUser?.id;
+      if (userId == null) return;
+
+      final cutoff = today.subtract(const Duration(days: 30));
+      final rawLogs = await client
+          .from('daily_logs')
+          .select('habit_id, completed')
+          .eq('user_id', userId)
+          .gte('log_date', cutoff.toIso8601String().substring(0, 10))
+          .lt('log_date', today.toIso8601String().substring(0, 10));
+
+      final completionCount = <String, int>{};
+      for (final log in rawLogs as List) {
+        final hId = log['habit_id'] as String;
+        if (log['completed'] == true) {
+          completionCount[hId] = (completionCount[hId] ?? 0) + 1;
+        }
+      }
+
+      pending.sort((a, b) =>
+          (completionCount[a.id] ?? 0).compareTo(completionCount[b.id] ?? 0));
+
+      await WidgetService.update(
+        completed: completed,
+        total: total,
+        worstPendingHabitNames: pending.take(3).map((h) => h.name).toList(),
+      );
+    } catch (_) {
+      // Widget update is non-critical.
     }
   }
 }

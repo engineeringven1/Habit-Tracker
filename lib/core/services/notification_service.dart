@@ -43,9 +43,10 @@ class NotificationService {
 
   // ── Schedule helpers ──────────────────────────────────────────────────────
 
-  // Schedules a one-shot notification for today at [hour].
-  // If that time has already passed today, nothing is scheduled.
-  static Future<void> _scheduleOnce({
+  // Schedules a DAILY recurring notification at [hour].
+  // If that time has already passed today, the first fire is tomorrow;
+  // after that it repeats automatically every 24 h without needing the app open.
+  static Future<void> _scheduleDaily({
     required int id,
     required String title,
     required String body,
@@ -53,15 +54,18 @@ class NotificationService {
   }) async {
     if (!_initialized || !_supported) return;
     final now = tz.TZDateTime.now(tz.local);
-    final target = tz.TZDateTime(tz.local, now.year, now.month, now.day, hour);
-    if (!target.isAfter(now)) return; // window already passed
+    var target = tz.TZDateTime(tz.local, now.year, now.month, now.day, hour);
+    // If the time already passed today, push to tomorrow so it doesn't fire instantly.
+    if (!target.isAfter(now)) {
+      target = target.add(const Duration(days: 1));
+    }
 
     await _plugin.zonedSchedule(
       id,
       title,
       body,
       target,
-      NotificationDetails(
+      const NotificationDetails(
         android: AndroidNotificationDetails(
           _channelId,
           _channelName,
@@ -74,7 +78,7 @@ class NotificationService {
       androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
-      // No matchDateTimeComponents → fires once, not recurring
+      matchDateTimeComponents: DateTimeComponents.time, // repeats every day at same hour
     );
   }
 
@@ -92,7 +96,7 @@ class NotificationService {
       await cancel(habitId(h.id));
       return;
     }
-    await _scheduleOnce(
+    await _scheduleDaily(
       id: habitId(h.id),
       title: h.name,
       body: '¡No olvides completar tu hábito!',
@@ -110,11 +114,32 @@ class NotificationService {
       await cancel(reminderId(r.id));
       return;
     }
-    await _scheduleOnce(
+    await _scheduleDaily(
       id: reminderId(r.id),
       title: r.name,
       body: '¡No olvides tu recordatorio!',
       hour: r.notifyHr,
+    );
+  }
+
+  // ── Test notification (fires immediately) ────────────────────────────────
+
+  static Future<void> showTestNotification() async {
+    if (!_initialized || !_supported) return;
+    await _plugin.show(
+      999999,
+      '¡Notificaciones funcionando! 🎉',
+      'Las notificaciones de Habit OS están activas en este dispositivo.',
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          _channelId,
+          _channelName,
+          channelDescription: _channelDesc,
+          importance: Importance.high,
+          priority: Priority.high,
+          icon: '@mipmap/ic_launcher',
+        ),
+      ),
     );
   }
 
